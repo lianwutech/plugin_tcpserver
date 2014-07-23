@@ -28,9 +28,16 @@ except ImportError:
         sys.path.insert(0, cmd_subfolder)
     import paho.mqtt.publish as publish
 
+from libs.utils import *
 
 # 全局变量
 devices_dict = dict()
+
+# 切换工作目录
+# 程序运行路径
+procedure_path = cur_file_dir()
+# 工作目录修改为python脚本所在地址，后续成为守护进程后会被修改为'/'
+os.chdir(procedure_path)
 
 # 日志对象
 logger = logging.getLogger('tcpserver')
