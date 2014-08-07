@@ -28,10 +28,18 @@ except ImportError:
         sys.path.insert(0, cmd_subfolder)
     import paho.mqtt.publish as publish
 
+from json import loads, dumps
+
 from libs.utils import *
 
+# 设置系统为utf-8  勿删除
+reload(sys)
+sys.setdefaultencoding('utf-8')
+
 # 全局变量
-devices_dict = dict()
+# 设备信息字典
+devices_info_dict = dict()
+thread_dict = dict()
 
 # 切换工作目录
 # 程序运行路径
@@ -52,10 +60,48 @@ config = ConfigParser.ConfigParser()
 config.read("./tcpserver.cfg")
 tcp_server_ip = config.get('server', 'ip')
 tcp_server_port = int(config.get('server', 'port'))
-mqtt_server_ip = config.get('mqtt', 'ip')
+mqtt_server_ip = config.get('mqtt', 'server')
 mqtt_server_port = int(config.get('mqtt', 'port'))
-gateway_topic= config.get('gateway', 'topic')
+gateway_topic = config.get('gateway', 'topic')
+device_network = config.get('device', 'network')
+data_protocol = config.get('device', 'protocol')
 
+# 获取本机ip
+ip_addr = get_ip_addr()
+
+# 加载设备信息字典
+devices_info_file = "devices.txt"
+
+# 新增设备
+def check_device(device_id, device_type, device_addr, device_port):
+    # 如果设备不存在则设备字典新增设备并写文件
+    if device_id not in devices_info_dict:
+        # 新增设备到字典中
+        devices_info_dict[device_id] = {
+            "device_id": device_id,
+            "device_type": device_type,
+            "device_addr": device_addr,
+            "device_port": device_port
+        }
+        logger.debug("发现新设备%r" % devices_info_dict[device_id])
+        #写文件
+        devices_file = open(devices_info_file, "w+")
+        devices_file.write(dumps(devices_info_dict))
+        devices_file.close()
+
+
+def publish_device_data(device_id, device_type, device_addr, device_port, device_data):
+    # device_data: 16进制字符串
+    # 组包
+    device_msg = "%s,%d,%s,%d,%s,%s" % (device_id, device_type, device_addr, device_port, data_protocol, device_data)
+
+    # MQTT发布
+    publish.single(topic=gateway_topic,
+                   payload=device_msg.encode("utf-8"),
+                   hostname=mqtt_server_ip,
+                   port=mqtt_server_port)
+
+    logger.info("向Topic(%s)发布消息：%s" % (gateway_topic, device_msg))
 
 # 串口数据读取线程
 def process_mqtt(device_id, handler):
@@ -78,7 +124,7 @@ def process_mqtt(device_id, handler):
         handler.wfile.write(binascii.a2b_hex(device_cmd))
         logger.info("向地址(%r)发送数据%s" % (handler.client_address, device_cmd))
 
-    client = mqtt.Client(client_id="gateway")
+    client = mqtt.Client(client_id=device_id)
     client.on_connect = on_connect
     client.on_message = on_message
 
@@ -98,12 +144,14 @@ class MyStreamRequestHandlerr(StreamRequestHandler):
     """
     def handle(self):
         # 绑定设备信息
-        device_id = "%s_%d" % (self.client_address[0], self.client_address[1])
+        device_id = "%s/%s/%s" % (device_network, self.client_address[0], self.client_address[1])
+        check_device(device_id, 0, self.client_address[0], self.client_address[1])
+
         # 创建MQTT监控线程
         process_thread = threading.Thread(target=process_mqtt, args=(device_id, self))
         process_thread.start()
-        devices_dict[device_id] = {"thread": process_thread, "handler": self}
-
+        thread_dict[device_id] = {"thread": process_thread, "handler": self}
+        device_info = devices_info_dict[device_id]
         while True:
             #客户端主动断开连接时，self.rfile.readline()会抛出异常
             try:
@@ -111,29 +159,20 @@ class MyStreamRequestHandlerr(StreamRequestHandler):
                 #read,readline,readlines,write(data),writelines(list),close,flush
                 data = self.rfile.readline().strip()
                 #self.client_address是客户端的连接(host, port)的元组
-                logger.info( "receive from (%r):%r" % (self.client_address, data))
-
-                # 消息编码
-                device_msg = {
-                    "device_id": device_id,
-                    "device_type": 0,
-                    "device_addr": self.client_address[0],
-                    "device_port": self.client_address[1],
-                    "device_data": data
-                }
-
-                # MQTT发布
-                publish.single(topic=gateway_topic,
-                               payload=device_msg,
-                               hostname=mqtt_server_ip,
-                               port=mqtt_server_port)
-                logger.info("向Topic(%s)发布消息：%r" % (gateway_topic, device_msg))
+                logger.info("receive from (%r):%r" % (self.client_address, data))
+                hex_data = binascii.b2a_hex(data)
+                publish_device_data(device_info["device_id"],
+                                    device_info["device_type"],
+                                    device_info["device_addr"],
+                                    device_info["device_port"],
+                                    hex_data)
+                logger.info("向Topic(%s)发布消息：%r" % (gateway_topic, hex_data))
             except:
                 traceback.print_exc()
                 break
 
         # 退出时，清除对应字典项
-        del devices_dict[device_id]
+        del thread_dict[device_id]
 
 
 if __name__ == "__main__":
@@ -147,5 +186,4 @@ if __name__ == "__main__":
     server.serve_forever()
 
 
-    
-    
+
