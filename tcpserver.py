@@ -7,6 +7,7 @@
     3、通过全局变量来管理每个介入设备，信息包括device_id，thread对象，handler对象
 """
 import sys
+import json
 from SocketServer import ThreadingTCPServer, StreamRequestHandler
 import paho.mqtt.client as mqtt
 import threading
@@ -93,15 +94,22 @@ def check_device(device_id, device_type, device_addr, device_port):
 def publish_device_data(device_id, device_type, device_addr, device_port, device_data):
     # device_data: 16进制字符串
     # 组包
-    device_msg = "%s,%d,%s,%d,%s,%s" % (device_id, device_type, device_addr, device_port, data_protocol, device_data)
+    device_msg = {
+        "device_id": device_id,
+        "device_type": device_type,
+        "device_addr": device_addr,
+        "device_port": device_port,
+        "data_protocol": data_protocol,
+        "data": device_data
+    }
 
     # MQTT发布
     publish.single(topic=gateway_topic,
-                   payload=device_msg.encode("utf-8"),
+                   payload=json.dumps(device_msg),
                    hostname=mqtt_server_ip,
                    port=mqtt_server_port)
-
     logger.info("向Topic(%s)发布消息：%s" % (gateway_topic, device_msg))
+
 
 # 串口数据读取线程
 def process_mqtt(device_id, handler):
@@ -120,7 +128,7 @@ def process_mqtt(device_id, handler):
     def on_message(client, userdata, msg):
         logger.info("收到数据消息" + msg.topic + " " + str(msg.payload))
         # 消息只包含device_cmd，16进制字符串
-        device_cmd = msg.payload
+        device_cmd = json.loads(msg.payload)["command"]
         handler.wfile.write(binascii.a2b_hex(device_cmd))
         logger.info("向地址(%r)发送数据%s" % (handler.client_address, device_cmd))
 
